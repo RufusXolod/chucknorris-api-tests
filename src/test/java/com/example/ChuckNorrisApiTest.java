@@ -1,39 +1,37 @@
 package com.example;
-
+import java.util.List;
 import io.restassured.RestAssured;
-import io.restassured.builder.RequestSpecBuilder;
 import io.restassured.builder.ResponseSpecBuilder;
 import io.restassured.http.ContentType;
-import io.restassured.path.json.JsonPath;
-import io.restassured.specification.RequestSpecification;
 import io.restassured.specification.ResponseSpecification;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.*;
 import org.junit.jupiter.params.provider.MethodSource;
 import java.util.stream.Stream;
 import static io.restassured.module.jsv.JsonSchemaValidator.matchesJsonSchemaInClasspath;
 
+import com.example.client.JokesClient;
+import com.example.model.Joke;
+import com.example.model.SearchResult;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 @DisplayName("Chuck Norris API")
 class ChuckNorrisApiTest {
 
-    private static RequestSpecification requestSpec;
+    private static final JokesClient client = new JokesClient();
     private static ResponseSpecification okJsonSpec;
-    private static final String BASE_URI = "https://api.chucknorris.io";
+
 
     @BeforeAll
     static void setUp() {
         RestAssured.enableLoggingOfRequestAndResponseIfValidationFails();
-
-        requestSpec = new RequestSpecBuilder()
-                .setBaseUri(BASE_URI)
-                .setBasePath("/jokes")
-                .setAccept(ContentType.JSON)
-                .build();
 
         okJsonSpec = new ResponseSpecBuilder()
                 .expectStatusCode(200)
@@ -42,12 +40,8 @@ class ChuckNorrisApiTest {
     }
 
     static Stream<String> allCategories() {
-        return RestAssured.given()
-                .baseUri(BASE_URI)
-                .when()
-                .get("/jokes/categories")
-                .then()
-                .statusCode(200)
+        return client.getCategories()
+                .then().statusCode(200)
                 .extract().jsonPath().getList("$", String.class)
                 .stream();
     }
@@ -59,48 +53,29 @@ class ChuckNorrisApiTest {
         @Test
         @DisplayName("Возвращает статус код 200 и непустой value")
         void returnsJokeWithText() {
-            given().spec(requestSpec)
-                    .when()
-                    .get("/random")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body("value", not(emptyOrNullString()));
+            client.getRandom().then().spec(okJsonSpec).body("value", not(emptyOrNullString()));
         }
 
         @ParameterizedTest(name = "Шутка из категории \"{0}\"")
         @MethodSource("com.example.ChuckNorrisApiTest#allCategories")
         @DisplayName("С параметром category возвращает шутку из этой категории")
         void returnsJokeFromCategory(String category) {
-            given().spec(requestSpec)
-                    .queryParam("category", category)
-                    .when()
-                    .get("/random")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body("categories", hasItem(category))
-                    .body("value", not(emptyOrNullString()));
+            Joke joke = client.getRandom(category).then().spec(okJsonSpec).extract().as(Joke.class);
+
+            assertTrue(joke.categories().contains(category));
+            assertFalse(joke.value().isBlank());
         }
 
         @Test
         @DisplayName("Несуществующая категория даёт 404")
         void unknownCategory_returns404() {
-            given().spec(requestSpec)
-                    .queryParam("category", "wasd")
-                    .when()
-                    .get("/random")
-                    .then()
-                    .statusCode(404);
+            client.getRandom("no_such_category_123").then().statusCode(404);
         }
 
         @Test
         @DisplayName("Ответ соответствует JSON-схеме шутки")
         void matchesJokeSchema() {
-            given().spec(requestSpec)
-                    .when()
-                    .get("/random")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body(matchesJsonSchemaInClasspath("schemas/joke.json"));
+            client.getRandom().then().spec(okJsonSpec).body(matchesJsonSchemaInClasspath("schemas/joke.json"));
         }
     }
 
@@ -111,24 +86,18 @@ class ChuckNorrisApiTest {
         @Test
         @DisplayName("Возвращает непустой список с известными категориями")
         void returnsKnownCategories() {
-            given().spec(requestSpec)
-                    .when()
-                    .get("/categories")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body("$", not(empty()))
-                    .body("$", hasItems("dev", "movie", "food"));
+            List<String> categories = client.getCategories()
+                    .then().spec(okJsonSpec)
+                    .extract().jsonPath().getList("$", String.class);
+
+            assertFalse(categories.isEmpty());
+            assertTrue(categories.containsAll(List.of("dev", "movie", "food")));
         }
 
         @Test
         @DisplayName("Ответ соответствует JSON-схеме списка категорий")
         void matchesCategoriesSchema() {
-            given().spec(requestSpec)
-                    .when()
-                    .get("/categories")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body(matchesJsonSchemaInClasspath("schemas/categories.json"));
+            client.getCategories().then().spec(okJsonSpec).body(matchesJsonSchemaInClasspath("schemas/categories.json"));
         }
     }
 
@@ -137,64 +106,43 @@ class ChuckNorrisApiTest {
     class Search {
 
         @Test
-        @DisplayName("Возвращает total и непустой result")
+        @DisplayName("Возвращает total, непустой result и что они равны")
         void returnsTotalAndResult() {
-            given().spec(requestSpec)
-                    .queryParam("query", "computer")
-                    .when()
-                    .get("/search")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body("total", greaterThan(0))
-                    .body("result", hasSize(greaterThan(0)));
+            SearchResult found = client.search("computer").then().spec(okJsonSpec).extract().as(SearchResult.class);
+
+            assertTrue(found.total() > 0);
+            assertFalse(found.result().isEmpty());
+            assertEquals(found.total(), found.result().size());
         }
 
         @Test
         @DisplayName("Найденные шутки содержат искомое слово")
         void resultsContainSearchedWord() {
-            given().spec(requestSpec)
-                    .queryParam("query", "computer")
-                    .when()
-                    .get("/search")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body("result.value", everyItem(containsStringIgnoringCase("computer")));
+            SearchResult found = client.search("computer").then().spec(okJsonSpec).extract().as(SearchResult.class);
+
+            assertFalse(found.result().isEmpty());
+            assertTrue(found.result().stream().allMatch(j -> j.value().toLowerCase().contains("computer")));
         }
 
         @Test
         @DisplayName("Запрос без совпадений даёт total = 0 и пустой result")
         void noMatches_returnsEmptyResult() {
-            given().spec(requestSpec)
-                    .queryParam("query", "wasd")
-                    .when()
-                    .get("/search")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body("total", equalTo(0))
-                    .body("result", empty());
+            SearchResult found = client.search("wasd").then().spec(okJsonSpec).extract().as(SearchResult.class);
+
+            assertEquals(0, found.total());
+            assertTrue(found.result().isEmpty());
         }
 
         @Test
         @DisplayName("Слишком короткий запрос даёт 400")
         void tooShortQuery_returnsError() {
-            given().spec(requestSpec)
-                    .queryParam("query", "wa")
-                    .when()
-                    .get("/search")
-                    .then()
-                    .statusCode(400);
+            client.search("wa").then().statusCode(400);
         }
 
         @Test
         @DisplayName("Ответ соответствует JSON-схеме поиска")
         void matchesSearchSchema() {
-            given().spec(requestSpec)
-                    .queryParam("query", "computer")
-                    .when()
-                    .get("/search")
-                    .then()
-                    .spec(okJsonSpec)
-                    .body(matchesJsonSchemaInClasspath("schemas/search.json"));
+            client.search("computer").then().spec(okJsonSpec).body(matchesJsonSchemaInClasspath("schemas/search.json"));
         }
     }
 
@@ -205,33 +153,21 @@ class ChuckNorrisApiTest {
         @Test
         @DisplayName("Возвращает ту же шутку, что была получена из /random")
         void returnsSameJokeAsRandom() {
-            JsonPath random = given().spec(requestSpec)
-                    .when()
-                    .get("/random")
-                    .then()
-                    .spec(okJsonSpec)
-                    .extract().jsonPath();
+            Joke random = client.getRandom()
+                    .then().spec(okJsonSpec)
+                    .extract().as(Joke.class);
 
-            String id = random.getString("id");
-            String value = random.getString("value");
+            Joke byId = client.getById(random.id())
+                    .then().spec(okJsonSpec)
+                    .extract().as(Joke.class);
 
-            given().spec(requestSpec)
-                    .when()
-                    .get("/{id}", id)
-                    .then()
-                    .spec(okJsonSpec)
-                    .body("id", equalTo(id))
-                    .body("value", equalTo(value));
+            assertEquals(random, byId);
         }
 
         @Test
         @DisplayName("Несуществующий id даёт 404")
         void unknownId_returns404() {
-            given().spec(requestSpec)
-                    .when()
-                    .get("/{id}", "no_such_id_123")
-                    .then()
-                    .statusCode(404);
+            client.getById("wasd_123").then().statusCode(404);
         }
     }
 }
